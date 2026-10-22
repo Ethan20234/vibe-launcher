@@ -123,8 +123,8 @@ final class Backdrops {
      * upper part of a poster, so cropping in the middle cut their heads off at the screen edge.
      */
     private static final float TOP_BIAS = 0.2f;
-    private static final int POOL_SIZE = 8;
-    private static final int POOL_TRIES = 40;     // lookups and downloads for a whole pool
+    private static final int POOL_SIZE = 12;
+    private static final int POOL_TRIES = 60;     // lookups and downloads for a whole pool
     private static final int GUIDE_IMAGES = POOL_SIZE * WALL;  // most fetched to fill the pool with walls
     static final long POOL_MS = 6L * 60 * 60 * 1000;
     /**
@@ -366,6 +366,15 @@ final class Backdrops {
     private void build(String pkg) {
         long built = System.currentTimeMillis();
         String fingerprint = fingerprint();
+        Pool old = pool(pkg);
+        boolean keys = old == null || !old.fingerprint.equals(fingerprint);   // new keys: the old pool is wrong
+        if (!keys) {
+            // The pool in use is topped up in place: the folder stays, the oldest still makes way for
+            // a new one. Rebuilding a whole generation meant every picture changed at once, six
+            // hours in, and the old set had to sit on disk until the new one was full.
+            topUp(pkg, old, built, fingerprint);
+            return;
+        }
         List<Choice> choices = collect(pkg, POOL_SIZE, POOL_TRIES);
         File gen = new File(poolDir(pkg), String.valueOf(built));
         gen.mkdirs();
@@ -396,8 +405,6 @@ final class Backdrops {
                 // Leave this one out.
             }
         }
-        Pool old = pool(pkg);
-        boolean keys = old == null || !old.fingerprint.equals(fingerprint);   // new keys: the old pool is wrong
         int want = old == null || keys ? 1 : Math.max(1, Math.min(POOL_SIZE, old.entries.size()));
         boolean stale = old != null && built - old.built > SHRINK_MS;
         if (entries.size() < want && !(stale && !entries.isEmpty()) && !keys) {
@@ -422,6 +429,113 @@ final class Backdrops {
             deleteTree(gen);
             attempted.put(pkg, built);
         }
+    }
+
+    /**
+     * Fills a pool already in use, one still at a time: while it has room the new still is added, and
+     * once it is full the oldest makes way for it. The folder stays the same, so there is never a
+     * second set on disk and the pictures change one at a time rather than all at once.
+     */
+    private void topUp(String pkg, Pool p, long built, String fingerprint) {
+        boolean empty = p.entries.isEmpty();
+        File dir = empty ? new File(poolDir(pkg), String.valueOf(built)) : p.entries.get(0).still.getParentFile();
+        dir.mkdirs();
+        int need = POOL_SIZE;   // a whole round's worth: each one written and the oldest dropped, in turn
+        List<Choice> choices = collect(pkg, need, POOL_TRIES);
+        // Never grow past what this app can actually supply: a pool of 5 cards filled to 12 would hold
+        // the same five pictures twice over. A round that finds fewer than the pool holds just replaces
+        // that many, oldest first.
+        int cap = Math.min(POOL_SIZE, Math.max(choices.size(), p.entries.size()));
+        int added = 0;
+        for (Choice c : choices) {
+            Entry e = writeStill(c, dir, built);
+            if (e == null) continue;
+            Entry gone = null;
+            synchronized (this) {
+                List<Entry> list = p.entries;
+                if (list.size() >= cap) {
+                    for (Entry o : list) {
+                        if (o != shown.get(pkg)) { gone = o; break; }   // the oldest not on screen
+                    }
+                    if (gone == null) {   // every still is the one on screen: nothing to replace
+                        deleteStill(e);
+                        continue;
+                    }
+                    list.remove(gone);
+                }
+                list.add(e);
+                try {
+                    writeIndex(dir, list, built, fingerprint);
+                    if (empty) pointAt(pkg, dir.getName());
+                    pools.put(pkg, new Pool(built, fingerprint, list));
+                } catch (IOException x) {
+                    list.remove(e);
+                    if (gone != null) list.add(0, gone);
+                    deleteStill(e);
+                    continue;
+                }
+                if (gone != null) deleteStill(gone);
+            }
+            added++;
+        }
+        if (added == 0 && !empty) attempted.put(pkg, built);   // keep what's there, try again later
+        else if (added > 0) attempted.remove(pkg);
+    }
+
+    /** Renders a choice into new files in the pool's folder: its still, and the title's logo if any. */
+    private Entry writeStill(Choice c, File dir, long made) {
+        String name = String.valueOf(made);
+        for (int n = 1; new File(dir, name + ".png").exists(); n++) name = made + "-" + n;
+        File still = new File(dir, name + ".png"), logo = null;
+        try {
+            Bitmap b = render(c);
+            if (b == null) return null;
+            b.setHasAlpha(false);   // opaque: stored as RGB, a quarter smaller than RGBA
+            try (FileOutputStream out = new FileOutputStream(still)) {
+                b.compress(Bitmap.CompressFormat.PNG, 100, out);
+            } finally {
+                b.recycle();
+            }
+            if (c.logo != null) {
+                logo = new File(dir, name + ".logo");
+                copy(c.logo, logo);
+            }
+            return new Entry(still, logo, c.title);
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            still.delete();
+            if (logo != null) logo.delete();
+            return null;
+        }
+    }
+
+    /** index.txt: the build time and fingerprint, then one still per line. Written whole, then renamed. */
+    private static void writeIndex(File dir, List<Entry> entries, long built, String fingerprint) throws IOException {
+        StringBuilder index = new StringBuilder().append(built).append('\t').append(fingerprint).append('\n');
+        for (Entry e : entries) {
+            String title = e.title == null ? "" : e.title.replace('\t', ' ').replace('\n', ' ');
+            index.append(e.still.getName()).append('\t').append(e.logo == null ? "" : e.logo.getName())
+                    .append('\t').append(title).append('\n');
+        }
+        File tmp = new File(dir, "index.tmp");
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(index.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        if (!tmp.renameTo(new File(dir, "index.txt"))) throw new IOException("rename");
+    }
+
+    private static void deleteStill(Entry e) {
+        if (e == null) return;
+        if (e.still != null) e.still.delete();
+        if (e.logo != null) e.logo.delete();
+    }
+
+    /** Points current.txt at a build folder. */
+    private void pointAt(String pkg, String name) throws IOException {
+        File tmp = new File(poolDir(pkg), "current.tmp");
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(name.getBytes(StandardCharsets.UTF_8));
+        }
+        if (!tmp.renameTo(new File(poolDir(pkg), "current.txt"))) throw new IOException("rename");
     }
 
     /**
