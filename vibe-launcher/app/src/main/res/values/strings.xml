@@ -75,4 +75,17 @@
     <string name="saved_from_phone">Saved from your phone</string>
     <string name="not_available">Not available on this TV</string>
     <string name="cant_open">Can\'t open %1$s</string>
+    <!-- App lock: the PIN, and the menu items that set it. -->
+    <string name="lock_app">Lock this app</string>
+    <string name="unlock_app">Unlock this app</string>
+    <string name="locked_app">%1$s is locked</string>
+    <string name="unlocked_app">%1$s is unlocked</string>
+    <string name="pin_title">Enter PIN for %1$s</string>
+    <string name="pin_title_unlock">Enter PIN</string>
+    <string name="pin_choose">Choose a PIN</string>
+    <string name="pin_confirm">Enter it again</string>
+    <string name="pin_wrong">Wrong PIN</string>
+    <string name="app_lock">App lock</string>
+    <string name="app_lock_set">PIN set. Long-press an app to lock it.</string>
+    <string name="app_lock_none">No PIN yet</string>
 </resources>

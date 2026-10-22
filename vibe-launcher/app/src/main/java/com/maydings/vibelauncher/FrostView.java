@@ -4,8 +4,10 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.Shader;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.ViewGroup;
@@ -26,9 +28,9 @@ public class FrostView extends View {
 
     private static final int SCALE = 8;           // the strip is drawn at 1/8 size
     private static final int BLUR_RADIUS = 2;     // in downscaled pixels, three passes ~ a gaussian
-    private static final int TINT = 0xA6000000;   // darkens the frost so the clock and buttons stay legible
-    private static final int HAIRLINE = 0x26FFFFFF;
-
+    private static final int TINT = 0x8C000000;   // darkens the frost so the clock and buttons stay legible
+    /** tvOS's shelf has no bottom edge: the tint fades out over the last part of the bar instead. */
+    private static final float FADE_FRACTION = 0.45f;
     private final Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint fillPaint = new Paint();
     private final Rect dst = new Rect();
@@ -45,6 +47,9 @@ public class FrostView extends View {
     private Bitmap frost;   // finished, blurred result that onDraw shows
     private Canvas smallCanvas;
     private int[] pixels, scratch, shown;
+    /** The bar's fade, kept between frames: making one per draw allocated on every frame. */
+    private LinearGradient fadeShader;
+    private int fadeHeight, fadeColor;
     /** 0 = nothing under the bar (invisible), 1 = fully frosted. */
     private float amount;
 
@@ -140,6 +145,9 @@ public class FrostView extends View {
             boxBlur(scratch, pixels, w, h, BLUR_RADIUS, false);
         }
         unpremultiply(pixels);
+        // The bar's bottom edge must not be a hard line across the artwork. The tint already fades
+        // there; the frost has to fade with it, or the blurred copy ends mid-tile in a straight cut.
+        fadeBottom(pixels, w, h);
         if (!amountChanged && shown != null && Arrays.equals(pixels, shown)) return;
         shown = pixels.clone();
         // A fresh bitmap per change, never touched again: on Android 10+ the render thread can still be
@@ -246,6 +254,36 @@ public class FrostView extends View {
         }
     }
 
+    /**
+     * Fades the frost out over the last {@link #FADE_FRACTION} of the bar, on the same curve the tint
+     * uses, so the two end together instead of the blurred copy cutting off in a straight line.
+     */
+    private void fadeBottom(int[] px, int w, int h) {
+        int start = Math.round(h * (1f - FADE_FRACTION));
+        for (int y = start; y < h; y++) {
+            int a = fadeAlpha(y, h);
+            if (a == 255) continue;
+            int base = y * w;
+            for (int x = 0; x < w; x++) {
+                int p = px[base + x];
+                px[base + x] = ((p >>> 24) * a / 255) << 24 | (p & 0x00FFFFFF);
+            }
+        }
+    }
+
+    /**
+     * The bar's alpha at row y, 0..255. A straight two-segment ramp (flat, then linear) has a kink where
+     * the segments meet, and the eye reads that kink as a line across the bar. Smoothstep has no kink:
+     * it leaves the flat top and reaches zero with the same slope at both ends.
+     */
+    private static int fadeAlpha(int y, int h) {
+        float start = h * (1f - FADE_FRACTION);
+        if (y <= start) return 255;
+        float t = Math.min(1f, (y - start) / Math.max(1f, h - start));
+        float f = 1f - t * t * (3f - 2f * t);   // 1 - smoothstep(0,1,t)
+        return Math.round(255 * f);
+    }
+
     /** getPixels gives straight alpha; blurring needs premultiplied or edges darken into halos. */
     private static void premultiply(int[] px) {
         for (int i = 0; i < px.length; i++) {
@@ -278,11 +316,26 @@ public class FrostView extends View {
         // the clipped-away tiles, so it must not fade (that let the sharp tiles show through).
         if (amount > 0f && frost != null) canvas.drawBitmap(frost, null, dst, bitmapPaint);
 
-        fillPaint.setColor(scaleAlpha(TINT, tint));
+        // The frost's own bottom edge is a hard cut: it ends where the bar ends, mid-tile, and that
+        // straight line across the artwork is the seam you see. It has to fade out with the tint, on
+        // the same smoothstep curve, so the two don't disagree about where the bar stops.
+        int solid = scaleAlpha(TINT, tint);
+        if (fadeShader == null || fadeHeight != getHeight() || fadeColor != solid) {
+            // Rebuilt only when the bar or the tint changes, not per frame.
+            fadeHeight = getHeight();
+            fadeColor = solid;
+            int steps = 16;
+            int[] colors = new int[steps + 1];
+            float[] stops = new float[steps + 1];
+            for (int i = 0; i <= steps; i++) {
+                stops[i] = i / (float) steps;
+                colors[i] = scaleAlpha(solid, fadeAlpha(Math.round(stops[i] * (fadeHeight - 1)), fadeHeight) / 255f);
+            }
+            fadeShader = new LinearGradient(0, 0, 0, fadeHeight, colors, stops, Shader.TileMode.CLAMP);
+        }
+        fillPaint.setShader(fadeShader);
         canvas.drawRect(dst, fillPaint);
-        float line = getResources().getDisplayMetrics().density;
-        fillPaint.setColor(scaleAlpha(HAIRLINE, tint));
-        canvas.drawRect(0, getHeight() - line, getWidth(), getHeight(), fillPaint);
+        fillPaint.setShader(null);
     }
 
     private static int scaleAlpha(int color, float f) {

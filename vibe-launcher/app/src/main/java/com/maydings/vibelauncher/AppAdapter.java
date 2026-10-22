@@ -10,10 +10,12 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
 import android.graphics.Outline;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.provider.Settings;
 import android.view.KeyEvent;
@@ -54,6 +56,9 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
 
         /** A tile in move mode changed position; it keeps focus. */
         void onTileMoved(int position);
+
+        /** OK on a tile. Goes through the listener so the app lock can stop it first. */
+        void onTileOpen(ComponentName component, String label);
     }
 
     static final class Entry {
@@ -62,6 +67,18 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         final String pkg;
         final Drawable banner;
         final Drawable icon;
+        /** The icon with the transparent margin most system apps ship cropped off, made on first use. */
+        Drawable trimmed;
+        /** The tile's plate, tinted with the icon's own dominant colour (Aerial's trick), made on first use. */
+        Drawable plate;
+        /** True when {@link #plate} is light enough that the dock's in-tile name needs dark text. */
+        boolean plateIsLight;
+        /** The plate's colour; 0 until it has been sampled from the icon. */
+        int plateColor;
+        /** The plate's corner radius the cached plate was built with. */
+        float plateRadius;
+        /** True when the artwork reaches every edge of its own bounds: drawn inset, like 酷9's logo. */
+        boolean bleed;
         /** The fixed last tile that opens the system Apps screen. */
         final boolean allApps;
         int ambient;
@@ -112,8 +129,12 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         // got to: the order so far is saved, else the reload put every tile back.
         if (moving >= 0) stopMove();
         PackageManager pm = ctx.getPackageManager();
-        Intent probe = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
-        List<ResolveInfo> found = pm.queryIntentActivities(probe, 0);
+        // System apps on China-market TVs (Hisense VIDAA, Xiaomi, TCL) often ship only a plain LAUNCHER
+        // entry, no LEANBACK_LAUNCHER one. Querying both is what makes them appear as tiles at all.
+        Intent leanbackProbe = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
+        Intent plainProbe = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> found = new ArrayList<>(pm.queryIntentActivities(leanbackProbe, 0));
+        found.addAll(pm.queryIntentActivities(plainProbe, 0));
         List<Entry> fresh = new ArrayList<>();
         Set<String> userHidden = userHidden();
         // Some system apps declare two Home entries under one name (Sony's Timers & Clock on some
@@ -147,6 +168,13 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         });
         fresh.add(new Entry(ctx.getString(R.string.all_apps), new ComponentName(ctx, MainActivity.class),
                 null, ctx.getDrawable(R.drawable.ic_all_apps), true));
+        // The grid icon is a white glyph on transparency: sampled, its plate would come out white on
+        // white. A neutral plate keeps it reading as the launcher's own tile, not a blank card.
+        if (!fresh.isEmpty()) {
+            Entry allApps = fresh.get(fresh.size() - 1);
+            allApps.plateColor = PLATE_FALLBACK;
+            allApps.plateIsLight = false;
+        }
         moving = -1;
         if (items.isEmpty()) {
             items.addAll(fresh);
@@ -334,6 +362,14 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
 
     /** Design size of a tile (dp); tiles shrink from here when the columns don't fit. */
     static final float DESIGN_W_DP = 180f, DESIGN_H_DP = 101f;
+    /** Neutral plate for an icon whose own colour is too dark to read as one (or that has none). */
+    static final int PLATE_FALLBACK = 0xFF2C2C2E;
+    /**
+     * Inset for a full-bleed icon, in dp. The tile is wide (1.78), so a square icon is capped by the
+     * tile's height: 13dp leaves it at ~68% of that height, between 4dp's 80% (too heavy) and 18dp's
+     * 56% (too small), and close to the margin 酷9's own artwork carries.
+     */
+    static final float BLEED_INSET_DP = 13f;
 
     /**
      * Tile width for a grid of this inner width: the cell minus room for the focus zoom and the glass,
@@ -371,7 +407,22 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
 
     /** The parts that change while moving: dock label visibility and the move outline. */
     private void bindState(Holder h, int position) {
-        h.name.setVisibility(position < dockSize ? View.INVISIBLE : View.VISIBLE);   // the dock has no labels
+        // Names go under every tile, the dock's too: an in-tile name on a light plate (聚好看's is white)
+        // reads as if the word were printed inside the icon. The dock row already reserves the space.
+        h.name.setVisibility(View.VISIBLE);
+        float density = h.card.getResources().getDisplayMetrics().density;
+        // A full-bleed icon (its artwork touches all four edges) fills the tile edge to edge, which
+        // reads heavier than 酷9's logo, whose own artwork already carries a margin. Inset those.
+        Entry entry = position >= 0 && position < items.size() ? items.get(position) : null;
+        // trimmedIcon() is what decides whether the artwork is full-bleed, so it has to run first.
+        if (entry != null) trimmedIcon(entry);
+        int side = Math.round((entry != null && entry.bleed ? BLEED_INSET_DP : 4) * density);
+        // Equal on all four sides: the icon is centred in the tile, and the name sits below the tile,
+        // so a larger bottom inset only pushed the artwork up and off-centre.
+        if (h.icon.getPaddingLeft() != side || h.icon.getPaddingTop() != side
+                || h.icon.getPaddingRight() != side || h.icon.getPaddingBottom() != side) {
+            h.icon.setPadding(side, side, side, side);
+        }
         h.card.setForeground(position == moving ? ctx.getDrawable(R.drawable.move_outline) : null);
     }
 
@@ -385,19 +436,28 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         h.card.setScaleY(1f);
         // An opaque banner covers the whole card (centerCrop), so the card's dark fill under it would be drawn
         // for nothing on every frame; it stays under banners with see-through parts and under icon tiles.
-        h.card.setBackground(e.banner != null && e.banner.getOpacity() == PixelFormat.OPAQUE ? null : h.cardBackground);
+        boolean bannerCovers = e.banner != null && e.banner.getOpacity() == PixelFormat.OPAQUE;
+        h.card.setBackground(bannerCovers ? null : h.cardBackground);
         if (e.banner != null) {
             h.banner.setImageDrawable(e.banner);
             h.banner.setVisibility(View.VISIBLE);
             h.icon.setVisibility(View.GONE);
             h.label.setVisibility(View.GONE);
+            h.card.setForeground(null);
         } else {
             h.banner.setImageDrawable(null);
             h.banner.setVisibility(View.GONE);
-            h.icon.setImageDrawable(e.icon);
+            // The plate takes the icon's own colour, so the icon's square background and the tile are one
+            // surface and the artwork reads full-bleed. Aerial's logoOnPlate works exactly this way.
+            Drawable plate = plate(e, AppAdapter.cornerRadius(h.card.getWidth() > 0 ? h.card.getWidth() : (int) (DESIGN_W_DP * h.card.getResources().getDisplayMetrics().density), h.card.getResources().getDisplayMetrics().density));
+            h.card.setBackground(plate);
+            h.icon.setImageDrawable(trimmedIcon(e));
             h.icon.setVisibility(View.VISIBLE);
             h.label.setText(e.label);
-            h.label.setVisibility(View.VISIBLE);
+            // White names vanish on a light plate (聚好看's icon is white); the plate's luminance decides.
+            h.label.setTextColor(e.plateIsLight ? 0xE6000000 : 0xFFFFFFFF);
+            // Never inside the tile: a name printed on the plate reads as part of the icon artwork.
+            h.label.setVisibility(View.GONE);
         }
         h.card.setOnClickListener(v -> launch(e));
         h.card.setOnLongClickListener(v -> {
@@ -412,26 +472,20 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
             openAllApps();
             return;
         }
-        Intent i = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
-                .setComponent(e.component)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        try {
-            ctx.startActivity(i);
-        } catch (Exception ex) {
-            Toast.makeText(ctx, ctx.getString(R.string.cant_open, e.label), Toast.LENGTH_SHORT).show();
-        }
+        listener.onTileOpen(e.component, e.label);
     }
 
     /** The system Apps screen (Settings > Apps). */
     private void openAllApps() {
-        for (String action : new String[]{Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS,
-                Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS, Settings.ACTION_APPLICATION_SETTINGS}) {
-            try {
-                ctx.startActivity(new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                return;
-            } catch (ActivityNotFoundException ignored) {
-            }
+        // The TV's own Settings > Apps screen is not usable here: Hisense VIDAA's AppsActivity throws
+        // NoClassDefFoundError in onCreate (settingslib's ApplicationsState$AppFilter is missing) and
+        // force-closes straight back to Home, so all three of those actions resolve and then land on a
+        // dead screen. Vibe Launcher draws the list itself instead (AllAppsActivity).
+        try {
+            ctx.startActivity(new Intent(ctx, AllAppsActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (ActivityNotFoundException ignored) {
+            Toast.makeText(ctx, ctx.getString(R.string.cant_open, ctx.getString(R.string.all_apps)),
+                    Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -454,6 +508,164 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
 
     String labelAt(int position) {
         return position >= 0 && position < items.size() ? items.get(position).label : "";
+    }
+
+    /**
+     * The tile's plate, in the icon's own dominant colour. Aerial's logoOnPlate does the same thing:
+     * app icons are a logo drawn on a coloured square, so a plate in that square's colour makes the
+     * icon's background and the tile one and the same surface, and the artwork reads edge to edge
+     * instead of as a small picture floating in a dark box. Sampling 24x24 is enough to find the
+     * background colour and costs nothing per tile.
+     */
+    private static Drawable plate(Entry e, float radius) {
+        if (e.plate != null && e.plateRadius == radius) return e.plate;
+        int colour = e.plateColor;
+        if (colour == 0) {
+            colour = PLATE_FALLBACK;
+            if (e.icon != null && e.icon.getIntrinsicWidth() > 0 && e.icon.getIntrinsicHeight() > 0) {
+                try {
+                    final int n = 24;
+                    Bitmap bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888);
+                    Drawable d = e.icon.getConstantState() != null
+                            ? e.icon.getConstantState().newDrawable().mutate() : e.icon;
+                    Rect saved = new Rect(d.getBounds());
+                    d.setBounds(0, 0, n, n);
+                    d.draw(new Canvas(bmp));
+                    d.setBounds(saved);
+                    // Quantised to 4 bits a channel so a gradient background still lands on one bucket.
+                    int[] hist = new int[4096];
+                    for (int y = 0; y < n; y++) {
+                        for (int x = 0; x < n; x++) {
+                            int p = bmp.getPixel(x, y);
+                            if ((p >>> 24) < 200) continue;
+                            hist[((p >> 12) & 0xF00) | ((p >> 8) & 0xF0) | ((p >> 4) & 0xF)]++;
+                        }
+                    }
+                    bmp.recycle();
+                    int best = -1, bestCount = 0;
+                    for (int i = 0; i < hist.length; i++) {
+                        if (hist[i] > bestCount) {
+                            bestCount = hist[i];
+                            best = i;
+                        }
+                    }
+                    if (best >= 0) {
+                        int sampled = 0xFF000000 | ((best & 0xF00) << 12) | ((best & 0xF0) << 8) | ((best & 0xF) << 4)
+                                | 0x0F0F0F;   // widen the bucket back to a full byte
+                        // Nearly black is no better than the fallback, and white text stays readable on it.
+                        if (luminance(sampled) > 0.06f) colour = sampled;
+                    }
+                } catch (RuntimeException | OutOfMemoryError ex) {
+                    // A tile is not worth a crash: the default plate.
+                }
+            }
+            e.plateColor = colour;
+            e.plateIsLight = luminance(colour) > 0.55f;
+        }
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.RECTANGLE);
+        g.setColor(colour);
+        g.setCornerRadius(radius);
+        e.plate = g;
+        e.plateRadius = radius;
+        return e.plate;
+    }
+
+    private static float luminance(int colour) {
+        return (0.2126f * ((colour >> 16) & 0xFF) + 0.7152f * ((colour >> 8) & 0xFF) + 0.0722f * (colour & 0xFF)) / 255f;
+    }
+
+    private static Drawable trimmedIcon(Entry e) {
+        if (e.trimmed != null) return e.trimmed;
+        e.trimmed = e.icon;
+        if (e.icon == null || e.icon.getIntrinsicWidth() <= 0 || e.icon.getIntrinsicHeight() <= 0) return e.trimmed;
+        final int n = 36;
+        try {
+            // Square sampling would squash a wide icon; keep the drawable's own aspect.
+            int iw = Math.max(1, e.icon.getIntrinsicWidth()), ih = Math.max(1, e.icon.getIntrinsicHeight());
+            int mw = iw >= ih ? n : Math.max(1, Math.round(n * (float) iw / ih));
+            int mh = ih >= iw ? n : Math.max(1, Math.round(n * (float) ih / iw));
+            Bitmap bmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888);
+            Drawable d = e.icon.getConstantState() != null
+                    ? e.icon.getConstantState().newDrawable().mutate() : e.icon;
+            Rect saved = new Rect(d.getBounds());
+            d.setBounds(0, 0, mw, mh);
+            d.draw(new Canvas(bmp));
+            d.setBounds(saved);
+            int minX = mw, minY = mh, maxX = -1, maxY = -1;
+            for (int y = 0; y < mh; y++) {
+                for (int x = 0; x < mw; x++) {
+                    if ((bmp.getPixel(x, y) >>> 24) < 16) continue;   // a soft shadow's tail doesn't count
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+            bmp.recycle();
+            if (maxX < 0 || (minX == 0 && minY == 0 && maxX == mw - 1 && maxY == mh - 1)) {
+                // Nothing opaque (keep it), or the artwork reaches every edge: a full-bleed square.
+                // Those fill the whole tile and read heavier than an icon that carries its own margin
+                // (ES's white block vs 酷9's logo), so they get inset when drawn.
+                if (maxX >= 0) e.bleed = true;
+                return e.trimmed;
+            }
+            // Scale the visible box back up to the icon's real size, then shift it so its top-left corner
+            // sits at the origin: what the ImageView draws is now only the artwork.
+            float sx = (maxX - minX + 1f) / mw, sy = (maxY - minY + 1f) / mh;
+            Drawable cropped = e.icon.getConstantState() != null
+                    ? e.icon.getConstantState().newDrawable().mutate() : e.icon;
+            cropped.setBounds(-Math.round(minX / sx), -Math.round(minY / sy),
+                    Math.round((mw - minX) / sx), Math.round((mh - minY) / sy));
+            e.trimmed = new BoundsDrawable(cropped);
+        } catch (RuntimeException | OutOfMemoryError ex) {
+            // A tile is not worth a crash: the icon as it came.
+        }
+        return e.trimmed;
+    }
+
+    /** One drawable with its own bounds: lets the cropped icon be drawn at any size the tile asks for. */
+    private static final class BoundsDrawable extends Drawable {
+        private final Drawable inner;
+
+        BoundsDrawable(Drawable inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public void draw(@NonNull Canvas canvas) {
+            inner.draw(canvas);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            inner.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter cf) {
+            inner.setColorFilter(cf);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
+
+        @Override
+        protected void onBoundsChange(Rect bounds) {
+            inner.setBounds(bounds);
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return inner.getIntrinsicWidth();
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return inner.getIntrinsicHeight();
+        }
     }
 
     /** A vivid colour sampled from the app's banner (or icon), cached per entry. */

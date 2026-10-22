@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- D-pad PIN entry: a 3x4 keypad, four dots, and a title saying which app is being unlocked. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="360dp"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/glass_panel"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/pinTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textColor="#FFFFFFFF"
+        android:textSize="19sp"
+        android:fontFamily="@font/outfit" />
+
+    <TextView
+        android:id="@+id/pinDots"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:layout_marginBottom="14dp"
+        android:gravity="center"
+        android:letterSpacing="0.25"
+        android:text="○ ○ ○ ○"
+        android:textColor="#FFFFFFFF"
+        android:textSize="22sp"
+        android:fontFamily="@font/outfit" />
+
+    <LinearLayout
+        android:id="@+id/pinGrid"
+        android:layout_width="match_parent"
+        android:layout_height="240dp"
+        android:orientation="vertical" />
+</LinearLayout>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Every installed app: a plain grid, focused from the top-left, no dock and no backdrop. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/allAppsRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF000000">
+
+    <TextView
+        android:id="@+id/allAppsTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="60dp"
+        android:layout_marginTop="34dp"
+        android:text="@string/all_apps"
+        android:textColor="#FFFFFFFF"
+        android:textSize="30sp"
+        android:fontFamily="@font/outfit_medium"
+        android:letterSpacing="-0.01" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/allAppsGrid"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginStart="60dp"
+        android:layout_marginEnd="60dp"
+        android:paddingTop="90dp"
+        android:paddingBottom="40dp"
+        android:clipToPadding="false"
+        android:clipChildren="false"
+        android:overScrollMode="never"
+        android:scrollbars="none" />
+
+</FrameLayout>

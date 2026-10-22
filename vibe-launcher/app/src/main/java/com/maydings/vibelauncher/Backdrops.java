@@ -118,6 +118,11 @@ final class Backdrops {
     private static final int WALL = 4;
     private static final int WALL_GAP = 6;        // px between the wall's cards
     private static final int MAX_TRIES = 12;      // lookups and downloads for one still before giving up
+    /**
+     * Where a picture taller than the screen is cut: 0 keeps its top, 0.5 the middle. Faces sit in the
+     * upper part of a poster, so cropping in the middle cut their heads off at the screen edge.
+     */
+    private static final float TOP_BIAS = 0.2f;
     private static final int POOL_SIZE = 8;
     private static final int POOL_TRIES = 40;     // lookups and downloads for a whole pool
     private static final int GUIDE_IMAGES = POOL_SIZE * WALL;  // most fetched to fill the pool with walls
@@ -138,6 +143,7 @@ final class Backdrops {
     private final ContentResolver resolver;
     private final Tmdb tmdb;
     private final Stremio stremio;
+    private final Popular popular;
     private final YouTubePopular youtubePopular;
     private final Plex plex;
     private final HdHomeRun hdHomeRun;
@@ -167,6 +173,7 @@ final class Backdrops {
         resolver = context.getContentResolver();
         tmdb = new Tmdb(context);
         stremio = new Stremio(context);
+        popular = new Popular(context);
         youtubePopular = new YouTubePopular(context);
         root = new File(context.getCacheDir(), "cards");
         poolRoot = new File(context.getCacheDir(), "pools");
@@ -301,7 +308,7 @@ final class Backdrops {
     private String fingerprint() {
         boolean cards = context.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED;
         return sha1(settings.tmdbKey() + "|" + settings.youtubeKey() + "|" + settings.plexToken() + "|" + cards
-                + "|" + STILL_FORMAT);
+                + "|" + STILL_FORMAT + "|" + TOP_BIAS + "|2");   // the scrim is baked in too: bump to rebuild
     }
 
     /** When the app's pool should next be rebuilt (in the past when it's due now). */
@@ -478,7 +485,8 @@ final class Backdrops {
         Bitmap out = src;
         if (src.getWidth() != targetWidth || src.getHeight() != targetHeight) {
             out = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
-            new Canvas(out).drawBitmap(src, centreCrop(src.getWidth(), src.getHeight(), targetWidth, targetHeight),
+            new Canvas(out).drawBitmap(src,
+                    centreCrop(src.getWidth(), src.getHeight(), targetWidth, targetHeight, TOP_BIAS),
                     new Rect(0, 0, targetWidth, targetHeight), new Paint(Paint.FILTER_BITMAP_FLAG));
             src.recycle();
         }
@@ -495,6 +503,7 @@ final class Backdrops {
         final boolean badged;
         final List<String> images = new ArrayList<>();
         int minWidth = MIN_WIDTH;
+        String logo;   // a title's own logo, when the source already knows it (see Popular)
 
         Card(String title, boolean badged) {
             this.title = title;
@@ -522,6 +531,20 @@ final class Backdrops {
         for (Card card : cards) {
             if (sharp.size() >= max || tries >= maxTries) break;
             next++;
+            // A card that already names its own logo (Popular's list) needs no title lookup: the source
+            // shipped the artwork and the logo together.
+            if (card.logo != null) {
+                for (String url : card.images) {
+                    if (unsuitable.contains(url) || !used.add(url)) continue;
+                    if (tries++ >= maxTries) break;
+                    File file = fetch(url, card.minWidth);
+                    if (file == null) continue;
+                    File logo = unsuitable.contains(card.logo) ? null : fetch(card.logo, false);
+                    sharp.add(new Choice(Collections.singletonList(file), logo, null));
+                    break;
+                }
+                continue;
+            }
             if (titleArt != null && card.title != null) {
                 tries++;
                 TitleArt.Art art = titleArt.lookup(card.title);
@@ -644,7 +667,42 @@ final class Backdrops {
         Collections.shuffle(clean, random);
         Collections.shuffle(badged, random);
         clean.addAll(badged);
+        if (clean.isEmpty()) {
+            // This app publishes no TV provider cards (Emby, Jellyfin, Kodi and most other media apps
+            // on a Hisense or Xiaomi TV), so the provider has nothing to turn into a still. The top
+            // films and shows stand in: their own backdrops and logos, which the caller cuts and
+            // darkens exactly as it would a card's art. Without them the tile keeps the colour glow.
+            List<Popular.Entry> list = new ArrayList<>(popular.entries());
+            if (!list.isEmpty()) {
+                // Shuffled with a seed of the pool period, so each rebuild brings a different list
+                // rather than the same pictures for another six hours.
+                long period = System.currentTimeMillis() / POOL_MS;
+                Collections.shuffle(list, new Random(period));
+                // Each app takes its own block of the list, not a random sample of it: a random sample
+                // of eight out of ninety-nine still shared a title with the next app about every time,
+                // and two tiles showing the same film read as a bug. Blocks are disjoint until the
+                // apps outnumber them, and then they start over.
+                int blocks = Math.max(1, list.size() / POOL_SIZE);
+                int block = Math.floorMod(appIndex(pkg), blocks);
+                int from = block * POOL_SIZE;
+                for (int i = 0; i < Math.min(POOL_SIZE, list.size()); i++) {
+                    Popular.Entry e = list.get((from + i) % list.size());
+                    Card card = new Card(null, false);
+                    card.images.add(e.backdrop);
+                    card.logo = e.logo;
+                    clean.add(card);
+                }
+            }
+        }
         return clean;
+    }
+
+    /** The app's place in the sorted list of tiles, so each app can claim a block of the popular list. */
+    private int appIndex(String pkg) {
+        List<String> apps = new ArrayList<>(AppAdapter.tilePackages(context));
+        Collections.sort(apps);
+        int at = apps.indexOf(pkg);
+        return at < 0 ? Math.abs(pkg.hashCode()) : at;
     }
 
     /** Video sites: their card titles are video names, not films or shows to look up on TMDB. */
@@ -771,8 +829,10 @@ final class Backdrops {
     private static void darken(Bitmap bitmap) {
         Canvas canvas = new Canvas(bitmap);
         Paint scrim = new Paint();
+        // The top stop is light: the top bar's FrostView already darkens the strip above the clock, and
+        // a heavy scrim here on top of that turned the faces at the top of a poster into silhouettes.
         scrim.setShader(new LinearGradient(0, 0, 0, bitmap.getHeight(),
-                new int[]{0xB3000000, 0x40000000, 0xF2000000}, new float[]{0f, 0.38f, 1f}, Shader.TileMode.CLAMP));
+                new int[]{0x33000000, 0x40000000, 0xF2000000}, new float[]{0f, 0.38f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawRect(0, 0, bitmap.getWidth(), bitmap.getHeight(), scrim);
     }
 
@@ -805,21 +865,27 @@ final class Backdrops {
             Bitmap card = BitmapFactory.decodeFile(files.get(i).getPath());
             if (card == null) continue;
             int left = (i % 2) * (cellW + WALL_GAP), top = (i / 2) * (cellH + WALL_GAP);
-            canvas.drawBitmap(card, centreCrop(card.getWidth(), card.getHeight(), cellW, cellH),
+            canvas.drawBitmap(card, centreCrop(card.getWidth(), card.getHeight(), cellW, cellH, 0.5f),
                     new Rect(left, top, left + cellW, top + cellH), paint);
             card.recycle();
         }
         return out;
     }
 
-    /** The part of a w x h image with the cell's aspect ratio, centred. */
-    private static Rect centreCrop(int w, int h, int cellW, int cellH) {
+    /**
+     * The part of a w x h image with the cell's aspect ratio. bias 0 keeps the top of the picture, 0.5
+     * the middle, 1 the bottom. Posters are cropped at {@link #TOP_BIAS} rather than in the middle:
+     * centred, a 2:3 poster loses the top of the frame, which is where faces are, so the people on it
+     * came out with their heads cut off by the screen edge.
+     */
+    private static Rect centreCrop(int w, int h, int cellW, int cellH, float bias) {
         if (w * cellH > h * cellW) {
             int cw = h * cellW / cellH;
             return new Rect((w - cw) / 2, 0, (w + cw) / 2, h);
         }
         int ch = w * cellH / cellW;
-        return new Rect(0, (h - ch) / 2, w, (h + ch) / 2);
+        int top = Math.round((h - ch) * bias);
+        return new Rect(0, top, w, top + ch);
     }
 
     /**

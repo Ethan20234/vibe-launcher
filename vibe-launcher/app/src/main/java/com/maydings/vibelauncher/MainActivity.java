@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -100,6 +101,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private ImageView backdropLogo;
     private TextView backdropTitle;
     private Backdrops backdrops;
+    /** Which apps need a PIN, and that PIN. */
+    private AppLock lock;
     /** The dock app whose backdrop is showing or loading, or null. */
     private String backdropPkg;
     private TextView btnWifi;
@@ -211,6 +214,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         ambient = findViewById(R.id.ambient);
         heroName = findViewById(R.id.heroName);
         backdrop = findViewById(R.id.backdrop);
+        lock = new AppLock(this);
         backdropImage = findViewById(R.id.backdropImage);
         backdropPrevious = findViewById(R.id.backdropPrevious);
         backdropTitleBox = findViewById(R.id.backdropTitleBox);
@@ -599,6 +603,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         backdropPkg = pkg;
         backdrops.load(pkg, (loaded, bitmap, logo, title) -> {
             if (!heroShown || !loaded.equals(backdropPkg)) return;   // moved on while it loaded
+            // Nothing came back (no pool, offline, out of memory): let go of the app so coming back to it
+            // tries again instead of returning early above, which left the tile on the colour glow until
+            // Home was recreated.
+            if (bitmap == null) backdropPkg = null;
             fadeBackdrop(bitmap, logo, title, color);
         });
     }
@@ -758,19 +766,23 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      */
     private void sizeTimeBox() {
         TextClock clock = findViewById(R.id.clock), ampm = findViewById(R.id.ampm);
-        boolean h24 = DateFormat.is24HourFormat(this);
+        // Forced to 24-hour time whatever the system says (see the layout: both formats are "HH:mm"),
+        // so the AM/PM clock never contributes width and the date no longer shifts at 10:00.
+        boolean h24 = true;
         // Measuring every minute of the day takes a moment: only again when the format or language changed.
         String measuredFor = h24 + "|" + Locale.getDefault();
         if (measuredFor.equals(timeBoxMeasuredFor)) return;
         timeBoxMeasuredFor = measuredFor;
         CharSequence format = h24 ? clock.getFormat24Hour() : clock.getFormat12Hour();
-        float half = 0;
+        float extra = 0;
         if (!h24) {
+            float half = 0;
             for (String s : new DateFormatSymbols().getAmPmStrings()) {
                 half = Math.max(half, ampm.getPaint().measureText(s.toUpperCase(Locale.getDefault())));
             }
+            extra = ((ViewGroup.MarginLayoutParams) ampm.getLayoutParams()).getMarginStart() + half;
         }
-        float extra = ((ViewGroup.MarginLayoutParams) ampm.getLayoutParams()).getMarginStart() + half;
+        ampm.setVisibility(h24 ? View.GONE : View.VISIBLE);
         Calendar time = Calendar.getInstance();
         timeBoxWidths.clear();
         for (int minute = 0; minute < 24 * 60; minute++) {
@@ -913,8 +925,18 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (icon != wifiIcon) {
             wifiIcon = icon;
             // The style's drawableTint also applies to an icon swapped in here.
-            btnWifi.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, 0, 0);
+            btnWifi.setCompoundDrawablesRelativeWithIntrinsicBounds(topIcon(icon), 0, 0, 0);
         }
+    }
+
+    /**
+     * The top pills are 34dp, so their icons are the 18dp copies, not the 22dp ones the popup rows use.
+     * Swapping an icon at runtime bypasses the layout, so the mapping has to happen here too.
+     */
+    private static int topIcon(int icon) {
+        if (icon == R.drawable.ic_wifi) return R.drawable.ic_wifi_top;
+        if (icon == R.drawable.ic_ethernet) return R.drawable.ic_ethernet_top;
+        return icon;
     }
 
     /** The Ethernet (preferred) or Wi-Fi connection under a VPN, or null. */
@@ -1040,6 +1062,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         showUpdate.run();
         addInputRow(rows, popup, R.drawable.ic_all_apps, getString(R.string.vibe_settings), -1,
                 () -> SettingsDialog.show(this, root));
+        if (!adapter.userHidden().isEmpty()) {
+            addInputRow(rows, popup, R.drawable.ic_hide, getString(R.string.show_hidden), -1,
+                    () -> showHidden(anchor));
+        }
         // At most every few minutes: GitHub allows 60 unsigned API calls an hour per address, shared by every
         // TV in the house, and this menu is opened often (it shows the memory meter).
         Updater.checkIfOlderThan(this, 5 * 60 * 1000L, (newer, failed) -> {
@@ -1111,6 +1137,40 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         } catch (ActivityNotFoundException e) {
             Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /**
+     * Launches a locked app only after the PIN. The tile's click goes through here rather than straight
+     * into the adapter, so there is one place the lock can't be forgotten.
+     */
+    void openTile(ComponentName component, String label) {
+        String pkg = component != null ? component.getPackageName() : null;
+        if (!lock.needsPin(pkg)) {
+            launchComponent(component, label);
+            return;
+        }
+        PinDialog.show(this, getString(R.string.pin_title, label), pin -> {
+            if (!lock.matches(pin)) return false;
+            launchComponent(component, label);
+            return true;
+        });
+    }
+
+    /** Starts the tile's component, trying the categories its app actually declares. */
+    private void launchComponent(ComponentName component, String label) {
+        Intent i = new Intent(Intent.ACTION_MAIN).setComponent(component)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        for (String category : new String[]{Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER, null}) {
+            Intent attempt = new Intent(i);
+            if (category != null) attempt.addCategory(category);
+            try {
+                startActivity(attempt);
+                return;
+            } catch (Exception ignored) {
+                // try the next category
+            }
+        }
+        Toast.makeText(this, getString(R.string.cant_open, label), Toast.LENGTH_SHORT).show();
     }
 
     /** Hides the Inputs pill on devices with nothing to switch to (e.g. a Shield: no HDMI-in, no tuner). */
@@ -1265,17 +1325,34 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
         popup.setWidth(Math.min(maxWidth, Math.max(minWidth, panel.getMeasuredWidth())));
 
-        // Below the anchor, or above it when it's too close to the bottom of the screen (dock tiles).
+        // Below the anchor, or above it when that side has more room (dock tiles). The top bar's pills
+        // sit at the very top, so a menu that does not fit below still hangs below: there is nothing
+        // above them but the screen edge.
         int gap = (int) (10 * density);
         int[] loc = new int[2];
         anchor.getLocationOnScreen(loc);
-        int spaceBelow = getResources().getDisplayMetrics().heightPixels - loc[1] - anchor.getHeight();
-        boolean above = panel.getMeasuredHeight() + gap > spaceBelow;
-        int yOff = above ? -(anchor.getHeight() + panel.getMeasuredHeight() + gap) : gap;
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int spaceBelow = screenH - loc[1] - anchor.getHeight();
+        int spaceAbove = loc[1];
+        boolean above = panel.getMeasuredHeight() > spaceBelow && spaceAbove > spaceBelow;
+
+        // Cap the menu to the room on that side and scroll inside it: the hidden apps list is longer
+        // than the screen, and uncapped its last rows were cut off by the bottom edge.
+        int room = (above ? spaceAbove : spaceBelow) - 2 * gap;
+        View scroll = panel.findViewById(R.id.rowsScroll);
+        if (panel.getMeasuredHeight() > room && scroll != null) {
+            ViewGroup.LayoutParams lp = scroll.getLayoutParams();
+            lp.height = room - (panel.getMeasuredHeight() - scroll.getMeasuredHeight());
+            scroll.setLayoutParams(lp);
+            panel.measure(View.MeasureSpec.makeMeasureSpec(popup.getWidth(), View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(room, View.MeasureSpec.AT_MOST));
+        }
+        int menuH = panel.getMeasuredHeight();
+        int yOff = above ? -(anchor.getHeight() + menuH + gap) : gap;
 
         // Drop in: fade and unfold from the edge nearest the anchor.
         panel.setAlpha(0f);
-        panel.setPivotY(above ? panel.getMeasuredHeight() : 0f);
+        panel.setPivotY(above ? menuH : 0f);
         panel.setScaleY(0.92f);
         panel.setTranslationY((above ? 8 : -8) * density);
         popup.showAsDropDown(anchor, 0, yOff, gravity);
@@ -1320,6 +1397,40 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     // ---- tile menu: move, hide, remove, app info, hidden apps -------------------------------------
+
+    /** Runs the action, asking for the PIN first when one is set. */
+    private void requirePinThen(String title, Runnable action) {
+        if (!lock.hasPin()) {
+            action.run();
+            return;
+        }
+        PinDialog.show(this, title, pin -> {
+            if (!lock.matches(pin)) return false;
+            action.run();
+            return true;
+        });
+    }
+
+    /**
+     * Sets the PIN, asking twice. One mistyped digit would otherwise mean the only way back is clearing
+     * the app's data, which takes the whole launcher layout with it.
+     */
+    private void choosePin(Runnable then) {
+        PinDialog.show(this, getString(R.string.pin_choose), first -> {
+            PinDialog.show(this, getString(R.string.pin_confirm), second -> {
+                if (!first.equals(second)) return false;
+                lock.setPin(first);
+                then.run();
+                return true;
+            });
+            return true;
+        });
+    }
+
+    @Override
+    public void onTileOpen(ComponentName component, String label) {
+        openTile(component, label);
+    }
 
     @Override
     public void onTileLongPress(int position, View card) {

@@ -162,7 +162,7 @@
                             android:id="@+id/clock"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:format12Hour="h:mm"
+                            android:format12Hour="HH:mm"
                             android:format24Hour="HH:mm"
                             android:textColor="#FFFFFFFF"
                             android:textSize="52sp"
@@ -214,7 +214,7 @@
                 android:layout_height="wrap_content"
                 android:layout_alignParentEnd="true"
                 android:layout_alignBottom="@id/leftBlock"
-                android:layout_marginBottom="6dp"
+                android:layout_marginBottom="16dp"
                 android:orientation="horizontal">
 
                 <TextView
@@ -227,8 +227,14 @@
                 <TextView
                     android:id="@+id/btnWifi"
                     style="@style/TopButton"
+                    android:layout_height="30dp"
+                    android:textSize="12sp"
+                    android:paddingStart="11dp"
+                    android:paddingEnd="13dp"
+                    android:drawablePadding="6dp"
                     android:text="@string/wifi"
-                    android:drawableStart="@drawable/ic_wifi"
+                    android:drawableStart="@drawable/ic_wifi_top"
+                    android:background="@drawable/pill_bg_top"
                     android:nextFocusDown="@+id/grid" />
 
                 <!-- A green dot in the gear's hollow centre while an update is ready (MainActivity.showUpdateReady).
@@ -241,17 +247,24 @@
                     <TextView
                         android:id="@+id/btnSettings"
                         style="@style/TopButton"
+                        android:layout_height="30dp"
+                        android:textSize="12sp"
+                        android:paddingStart="11dp"
+                        android:paddingEnd="13dp"
+                        android:drawablePadding="6dp"
                         android:text="@string/settings"
-                        android:drawableStart="@drawable/ic_settings"
+                        android:drawableStart="@drawable/ic_settings_top"
+                        android:background="@drawable/pill_bg_top"
                         android:nextFocusDown="@+id/grid" />
 
+                    <!-- Dot offsets track the smaller pill: 30/42 of the original 34.5/18.5. -->
                     <View
                         android:id="@+id/updateDot"
                         android:layout_width="5dp"
                         android:layout_height="5dp"
                         android:layout_gravity="top|start"
-                        android:layout_marginTop="18.5dp"
-                        android:layout_marginStart="34.5dp"
+                        android:layout_marginTop="13dp"
+                        android:layout_marginStart="25dp"
                         android:background="@drawable/status_dot"
                         android:visibility="gone" />
                 </FrameLayout>
