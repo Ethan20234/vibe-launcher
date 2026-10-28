@@ -102,6 +102,27 @@ final class SettingsDialog {
             showLanguage.run();
             languageButton.requestFocus();
         }));
+        // App lock: the PIN that guards locked tiles. Change asks for the current one first; Set appears
+        // while there is none. Applied at once rather than on Save — it is its own dialog, and Cancel
+        // closing it should not silently undo a PIN change.
+        AppLock lock = new AppLock(activity);
+        TextView pinButton = panel.findViewById(R.id.pinButton);
+        pinButton.setText(lock.hasPin() ? R.string.pin_change : R.string.pin_set);
+        pinButton.setOnClickListener(v -> {
+            Runnable change = () -> PinDialog.chooseNew(activity, lock, () -> {
+                pinButton.setText(R.string.pin_change);
+                Toast.makeText(activity, R.string.pin_changed, Toast.LENGTH_SHORT).show();
+            });
+            if (!lock.hasPin()) {
+                change.run();
+                return;
+            }
+            PinDialog.show(activity, activity.getString(R.string.pin_current), pin -> {
+                if (!lock.matches(pin)) return false;
+                change.run();
+                return true;
+            });
+        });
         // Hide inactive inputs: Off or On, the choice marked; applied on Save.
         boolean savedHideInputs = settings.hideInactiveInputs();
         boolean[] hideInputs = {savedHideInputs};
@@ -181,7 +202,8 @@ final class SettingsDialog {
                 return false;   // Left/Right move between the pills
             });
         }
-        steer(languageButton, hideEntry, updateButton.getVisibility() == View.VISIBLE ? updateButton : null, save, cameFrom);
+        steer(languageButton, hideEntry, pinButton, save, cameFrom);
+        steer(pinButton, languageButton, updateButton.getVisibility() == View.VISIBLE ? updateButton : null, save, cameFrom);
         for (View pill : hidePills) {
             pill.setOnKeyListener((v, keyCode, event) -> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
@@ -194,7 +216,7 @@ final class SettingsDialog {
                 return false;   // Left/Right move between the pills
             });
         }
-        steer(updateButton, languageButton, null, save, cameFrom);
+        steer(updateButton, pinButton, null, save, cameFrom);
         showUpdates(activity, updateStatus, updateButton);
         View.OnKeyListener back = (v, keyCode, event) -> event.getAction() == KeyEvent.ACTION_DOWN
                 && keyCode == KeyEvent.KEYCODE_DPAD_LEFT && cameFrom[0].requestFocus();
