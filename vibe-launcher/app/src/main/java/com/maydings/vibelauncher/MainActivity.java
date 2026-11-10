@@ -180,6 +180,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 String pkg = adapter.packageAt(i);
                 if (pkg != null) dock.add(pkg);
             }
+            if (dock.isEmpty()) {   // tiles not loaded yet: try again rather than wait six hours
+                handler.removeCallbacks(this);
+                handler.postDelayed(this, 3000);
+                return;
+            }
             for (String pkg : dock) backdrops.refresh(pkg);
             handler.removeCallbacks(this);
             // Builds just started count as fresh, so this lands on the next pool to fall due.
@@ -273,7 +278,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             int tileH = AppAdapter.tileHeightPx(AppAdapter.tileWidthPx(
                     (r - l) - grid.getPaddingLeft() - grid.getPaddingRight(), COLUMNS, density));
             int dockRow = AppAdapter.itemHeightPx(tileH, density) + (int) ((6 + 12) * density);   // plus DockDecoration offsets
-            int want = Math.max(0, h - dockRow - (int) (30 * density));
+            // No peek of the next row: the dock row's bottom edge sits exactly on the screen edge, so the
+            // home screen shows one row and nothing else. The other rows are one Down away.
+            int want = Math.max(0, h - dockRow);
             boolean moved = grid.getPaddingTop() != want;
             if (moved) {
                 grid.setPadding(grid.getPaddingLeft(), want, grid.getPaddingRight(), grid.getPaddingBottom());
@@ -1416,15 +1423,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      * the app's data, which takes the whole launcher layout with it.
      */
     private void choosePin(Runnable then) {
-        PinDialog.show(this, getString(R.string.pin_choose), first -> {
-            PinDialog.show(this, getString(R.string.pin_confirm), second -> {
-                if (!first.equals(second)) return false;
-                lock.setPin(first);
-                then.run();
-                return true;
-            });
-            return true;
-        });
+        PinDialog.chooseNew(this, lock, then);
     }
 
     @Override

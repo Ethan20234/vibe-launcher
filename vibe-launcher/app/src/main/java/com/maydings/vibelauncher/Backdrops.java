@@ -260,6 +260,8 @@ final class Backdrops {
                         bitmap = render(c);
                         logo = c.logo != null ? decodeLogo(c.logo) : null;
                         title = c.title;
+                    } else {
+                        bitmap = iconStill(pkg);   // no art at all (offline): never leave the tile bare
                     }
                 }
             } catch (RuntimeException | OutOfMemoryError e) {
@@ -274,6 +276,43 @@ final class Backdrops {
             main.post(() -> callback.onBackdrop(pkg, b, l, t));
             refresh(pkg);
         });   // ahead of anything else: this is the one on screen
+    }
+
+    /**
+     * The last resort before the bare colour glow: the app's own icon and name on a dark plate, drawn to
+     * the tile's size so it fills it like any still. Offline on the first run, or art that can't be used
+     * at all, would otherwise leave a first-row tile with nothing in it.
+     */
+    private Bitmap iconStill(String pkg) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            Bitmap out = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(out);
+            Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+            fill.setShader(new LinearGradient(0, 0, 0, targetHeight,
+                    0xFF23262E, 0xFF08090B, Shader.TileMode.CLAMP));
+            c.drawRect(0, 0, targetWidth, targetHeight, fill);
+
+            android.graphics.drawable.Drawable icon = pm.getApplicationIcon(pkg);
+            int size = Math.round(targetHeight * 0.30f);
+            int cx = targetWidth / 2, cy = targetHeight / 2 - Math.round(targetHeight * 0.04f);
+            icon.setBounds(cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2);
+            icon.draw(c);
+
+            CharSequence label = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0));
+            if (label != null && label.length() > 0) {
+                Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+                text.setColor(0xFFF2F2F2);
+                text.setTextSize(targetHeight * 0.062f);
+                text.setTextAlign(Paint.Align.CENTER);
+                text.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                text.setShadowLayer(targetHeight * 0.012f, 0, targetHeight * 0.004f, 0xCC000000);
+                c.drawText(label.toString(), cx, cy + size / 2 + targetHeight * 0.10f, text);
+            }
+            return out;
+        } catch (RuntimeException | OutOfMemoryError | android.content.pm.PackageManager.NameNotFoundException e) {
+            return null;   // no icon to be had: the colour glow, as before
+        }
     }
 
     /** This visit's still from the app's pool: kept for the visit, and not the one shown last time. */
@@ -634,7 +673,17 @@ final class Backdrops {
      * as tries.
      */
     private List<Choice> collect(String pkg, int max, int maxTries) {
-        List<Card> cards = cards(pkg);
+        List<Choice> choices = collectFrom(pkg, cards(pkg), max, maxTries);
+        if (choices.isEmpty()) {
+            // Cards whose art all falls short (红果短剧 ships ten portrait thumbnails, none wide enough
+            // to cut) used to leave the tile with no poster at all. The stand-in cards give it one,
+            // exactly as they do for the apps that publish no cards.
+            choices = collectFrom(pkg, popularCards(pkg), max, maxTries);
+        }
+        return choices;
+    }
+
+    private List<Choice> collectFrom(String pkg, List<Card> cards, int max, int maxTries) {
         // Films and shows by title: TMDB with a key, Stremio without. Not for video sites' video names.
         TitleArt titleArt = isVideoSite(pkg) ? null : tmdb.enabled() ? tmdb : stremio;
         List<Choice> sharp = new ArrayList<>(), walls = new ArrayList<>();
@@ -781,11 +830,19 @@ final class Backdrops {
         Collections.shuffle(clean, random);
         Collections.shuffle(badged, random);
         clean.addAll(badged);
-        if (clean.isEmpty()) {
-            // This app publishes no TV provider cards (Emby, Jellyfin, Kodi and most other media apps
-            // on a Hisense or Xiaomi TV), so the provider has nothing to turn into a still. The top
-            // films and shows stand in: their own backdrops and logos, which the caller cuts and
-            // darkens exactly as it would a card's art. Without them the tile keeps the colour glow.
+        return clean;
+    }
+
+    /**
+     * The top films and shows as stand-in cards: their own backdrops and logos, which the caller cuts
+     * and darkens exactly as it would a card's art. For apps whose own cards can't make a still —
+     * those that publish none at all (Emby, Jellyfin, Kodi and most other media apps on a Hisense or
+     * Xiaomi TV), and those whose art is all unusable (a provider shipping ten portrait thumbnails
+     * too small to cut, which left the tile bare). Empty when the list can't be had.
+     */
+    private List<Card> popularCards(String pkg) {
+        List<Card> clean = new ArrayList<>();
+        {
             List<Popular.Entry> list = new ArrayList<>(popular.entries());
             if (!list.isEmpty()) {
                 // Shuffled with a seed of the pool period, so each rebuild brings a different list

@@ -88,4 +88,10 @@
     <string name="app_lock">App lock</string>
     <string name="app_lock_set">PIN set. Long-press an app to lock it.</string>
     <string name="app_lock_none">No PIN yet</string>
+    <string name="app_lock_pin">App lock PIN</string>
+    <string name="pin_current">Enter the current PIN</string>
+    <string name="pin_change">Change</string>
+    <string name="pin_set">Set</string>
+    <string name="pin_changed">PIN changed</string>
+    <string name="pin_mismatch">The two entries differ. Start again.</string>
 </resources>

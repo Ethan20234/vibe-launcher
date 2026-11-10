@@ -78,6 +78,12 @@
     <string name="app_lock">应用锁</string>
     <string name="app_lock_set">密码已设置。长按应用即可锁定。</string>
     <string name="app_lock_none">尚未设置密码</string>
+    <string name="app_lock_pin">应用锁密码</string>
+    <string name="pin_current">输入当前密码</string>
+    <string name="pin_change">修改</string>
+    <string name="pin_set">设置</string>
+    <string name="pin_changed">密码已修改</string>
+    <string name="pin_mismatch">两次输入不一致，请重新设置</string>
     <string name="smarttube_install">安装 SmartTube</string>
     <string name="smarttube_open">打开 SmartTube 登录</string>
     <string name="smarttube_downloading">正在下载 SmartTube…</string>

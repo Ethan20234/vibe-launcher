@@ -139,6 +139,28 @@
                         android:paddingStart="20dp" />
                 </LinearLayout>
 
+                <!-- App lock: the PIN that guards locked tiles. Shows Change once one is set, Set when not;
+                     applied at once, not on Save (a PIN change is its own dialog). -->
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        style="@style/SettingsLabel"
+                        android:layout_marginTop="0dp"
+                        android:layout_marginEnd="6dp"
+                        android:maxWidth="150dp"
+                        android:text="@string/app_lock_pin" />
+
+                    <TextView
+                        android:id="@+id/pinButton"
+                        style="@style/TopButton"
+                        android:paddingStart="20dp" />
+                </LinearLayout>
+
                 <TextView
                     style="@style/SettingsLabel"
                     android:layout_marginTop="28dp"

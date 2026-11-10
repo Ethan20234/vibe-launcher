@@ -387,15 +387,6 @@ public class AllAppsActivity extends Activity {
 
     /** Sets the PIN, asked twice: one mistyped digit would leave no way back but clearing app data. */
     private void choosePin(Runnable then) {
-        PinDialog.show(this, getString(R.string.pin_choose), first -> {
-            // Close this dialog first, or the second one stacks on top of it.
-            PinDialog.show(this, getString(R.string.pin_confirm), second -> {
-                if (!first.equals(second)) return false;
-                new AppLock(this).setPin(first);
-                then.run();
-                return true;
-            });
-            return true;
-        });
+        PinDialog.chooseNew(this, new AppLock(this), then);
     }
 }

@@ -14,6 +14,7 @@ import android.graphics.ColorFilter;
 import android.graphics.Outline;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.graphics.drawable.AdaptiveIconDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -151,6 +152,13 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
             // A small square "banner" (Rockchip's Media Center ships a 64 px one) is a blur cropped over a
             // wide tile: treat it as none, so the tile shows the icon and name instead.
             if (banner != null && !isBannerShaped(banner.getIntrinsicWidth(), banner.getIntrinsicHeight())) banner = null;
+            // A sparse banner (a small logo parked on a dark canvas — AdGuard's official TV banner covers
+            // 9.8% of its 320x180, 红果's 13.6%) centreCrops into a tile that reads as "a small icon on a
+            // big dark board", exactly the look the icon+plate path was rebuilt to avoid. Hand those
+            // tiles to the icon path instead. Adaptive icons draw their background layer edge to edge,
+            // which already fills the tile like a plate, so they are not ours to judge.
+            // The app's own banner always wins, sparse or not: the user wants the full-bleed artwork
+            // in the first row, not an icon on a plate. (isSparseArtwork stays for the record.)
             Drawable icon = ri.loadIcon(pm);
             fresh.add(new Entry(label, new ComponentName(pkg, ri.activityInfo.name), banner, icon));
         }
@@ -215,6 +223,52 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
     /** Wide enough to be a banner. A drawable with no intrinsic size (a colour, a shape) still fills the tile. */
     static boolean isBannerShaped(int width, int height) {
         return width <= 0 || height <= 0 || width >= height * 1.4f;
+    }
+
+    /**
+     * True when a banner is a small logo parked on a flat canvas. Measured on this TV's tiles
+     * (32x32 sample, same code as this method): AdGuard 0.098, Nuvio 0.100, 红果 0.136, Emby 0.141,
+     * TiviMate 0.153 — all "dark board + left logo" designs that read as a small icon on the tile —
+     * while genuinely full-bleed banners start at 0.269 (热舞型动) and 0.651 (tv.qx). Under 20%
+     * differing pixels the artwork can't fill the tile, so the banner is dropped and the tile falls
+     * to the icon+plate path. A false "keep" only shows the official art as before; the direction of
+     * error is safe. Mostly transparent banners are left alone (nothing to judge).
+     */
+    private static boolean isSparseArtwork(Drawable d) {
+        final int n = 32;
+        try {
+            Drawable draw = d.getConstantState() != null ? d.getConstantState().newDrawable().mutate() : d;
+            Rect saved = new Rect(draw.getBounds());
+            Bitmap bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888);
+            draw.setBounds(0, 0, n, n);
+            draw.draw(new Canvas(bmp));
+            draw.setBounds(saved);
+            int[] px = new int[n * n];
+            bmp.getPixels(px, 0, n, 0, 0, n, n);
+            bmp.recycle();
+            int[] hist = new int[4096];
+            int opaque = 0;
+            for (int p : px) {
+                if ((p >>> 24) < 200) continue;
+                opaque++;
+                hist[((p >> 12) & 0xF00) | ((p >> 8) & 0xF0) | ((p >> 4) & 0xF)]++;
+            }
+            int best = -1, bestCount = 0;
+            for (int i = 0; i < hist.length; i++) {
+                if (hist[i] > bestCount) { bestCount = hist[i]; best = i; }
+            }
+            if (best < 0 || opaque < n * n * 3 / 10) return false;
+            int r = (((best >> 8) & 0xF) << 4) | 8, g = (((best >> 4) & 0xF) << 4) | 8, b = ((best & 0xF) << 4) | 8;
+            int differs = 0;
+            for (int p : px) {
+                if ((p >>> 24) < 200) continue;
+                if (Math.abs(((p >> 16) & 0xFF) - r) > 40 || Math.abs(((p >> 8) & 0xFF) - g) > 40
+                        || Math.abs((p & 0xFF) - b) > 40) differs++;
+            }
+            return differs < opaque / 5;   // under 20% artwork: a logo parked on a plate
+        } catch (RuntimeException | OutOfMemoryError ex) {
+            return false;   // a tile is not worth a crash: show the banner as it came
+        }
     }
 
     // ---- hiding ----------------------------------------------------------------------------------

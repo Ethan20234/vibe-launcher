@@ -13,6 +13,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /**
  * A four-digit PIN entered with the D-pad: a 3x4 keypad where Left/Right/Up/Down move and OK presses
@@ -86,6 +87,26 @@ final class PinDialog {
         cells[0].requestFocus();
         dialog.show();
         cells[0].requestFocus();
+    }
+
+    /**
+     * Asks twice for a new PIN and stores it. A mismatch starts over from the first prompt instead of
+     * aborting: a silent stop here would look like the PIN was changed when it wasn't.
+     */
+    static void chooseNew(Context ctx, AppLock lock, Runnable then) {
+        show(ctx, ctx.getString(R.string.pin_choose), first -> {
+            show(ctx, ctx.getString(R.string.pin_confirm), second -> {
+                if (!first.equals(second)) {
+                    Toast.makeText(ctx, R.string.pin_mismatch, Toast.LENGTH_SHORT).show();
+                    chooseNew(ctx, lock, then);
+                    return true;
+                }
+                lock.setPin(first);
+                then.run();
+                return true;
+            });
+            return true;
+        });
     }
 
     private static void press(int index, StringBuilder entered, TextView dots, Dialog dialog, Check check) {
